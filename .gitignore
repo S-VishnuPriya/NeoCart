@@ -31,3 +31,8 @@ lerna-debug.log*
 .idea/
 .DS_Store
 Thumbs.db
+
+# Private Notes & Testing Documents (Local only)
+Understand NeoCart/
+TESTING_STEPS_AND_MAJOR_TESTCASES.md
+

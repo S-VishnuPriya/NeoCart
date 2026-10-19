@@ -1,0 +1,319 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  CUSTOMER
+  MANAGER
+  ADMIN
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  CREDIT_CARD
+  DEBIT_CARD
+  UPI
+  NET_BANKING
+  CASH_ON_DELIVERY
+}
+
+// 1. Authentication & Users
+model User {
+  id            String         @id @default(uuid())
+  email         String         @unique
+  passwordHash  String
+  role          Role           @default(CUSTOMER)
+  isActive      Boolean        @default(true)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  customer      Customer?
+  refreshTokens RefreshToken[]
+  auditLogs     AuditLog[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  isRevoked Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+// 2. Customer Profile & Addresses
+model Customer {
+  id        String    @id @default(uuid())
+  userId    String    @unique
+  firstName String
+  lastName  String
+  phone     String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  addresses Address[]
+  carts     Cart[]
+  orders    Order[]
+  reviews   Review[]
+
+  @@map("customers")
+}
+
+model Address {
+  id                String   @id @default(uuid())
+  customerId        String
+  streetAddress     String
+  apartment         String?
+  city              String
+  state             String
+  postalCode        String
+  country           String   @default("US")
+  isDefaultShipping Boolean  @default(false)
+  isDefaultBilling  Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  customer          Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  shippingOrders    Order[]  @relation("OrderShippingAddress")
+  billingOrders     Order[]  @relation("OrderBillingAddress")
+
+  @@index([customerId])
+  @@map("addresses")
+}
+
+// 3. Product Catalog & Categories (Dev B)
+model Category {
+  id          String    @id @default(uuid())
+  name        String    @unique
+  slug        String    @unique
+  description String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  products    Product[]
+
+  @@map("categories")
+}
+
+model Product {
+  id                String         @id @default(uuid())
+  name              String
+  slug              String         @unique
+  description       String
+  price             Decimal        @db.Decimal(10, 2)
+  sku               String         @unique
+  stock             Int            @default(0)
+  lowStockThreshold Int            @default(5)
+  imageUrl          String?
+  isActive          Boolean        @default(true)
+  categoryId        String
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  category          Category       @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  cartItems         CartItem[]
+  orderItems        OrderItem[]
+  reviews           Review[]
+  inventoryLogs     InventoryLog[]
+
+  @@index([categoryId])
+  @@index([isActive])
+  @@map("products")
+}
+
+// 4. Inventory Management & Logging (Dev B)
+model InventoryLog {
+  id              String   @id @default(uuid())
+  productId       String
+  changeAmount    Int      // positive for restock, negative for deduction
+  previousStock   Int
+  newStock        Int
+  reason          String   // RESTOCK, ORDER_RESERVE, ORDER_CANCEL, MANUAL_ADJUST
+  performedByRole String   @default("SYSTEM")
+  createdAt       DateTime @default(now())
+
+  product         Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId])
+  @@map("inventory_logs")
+}
+
+// 5. Shopping Cart & Items
+model Cart {
+  id             String     @id @default(uuid())
+  customerId     String?
+  guestSessionId String?    @unique
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  customer       Customer?  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  items          CartItem[]
+
+  @@index([customerId])
+  @@map("carts")
+}
+
+model CartItem {
+  id        String   @id @default(uuid())
+  cartId    String
+  productId String
+  quantity  Int      @default(1)
+  unitPrice Decimal  @db.Decimal(10, 2)
+  addedAt   DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cart      Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([cartId, productId])
+  @@map("cart_items")
+}
+
+// 6. Orders & Status Workflow
+model Order {
+  id                 String               @id @default(uuid())
+  orderNumber        String               @unique
+  customerId         String
+  shippingAddressId  String
+  billingAddressId   String
+  status             OrderStatus          @default(PENDING)
+  paymentStatus      PaymentStatus        @default(PENDING)
+  subtotal           Decimal              @db.Decimal(10, 2)
+  taxAmount          Decimal              @db.Decimal(10, 2)
+  shippingCost       Decimal              @db.Decimal(10, 2)
+  totalAmount        Decimal              @db.Decimal(10, 2)
+  cancellationReason String?
+  cancelledAt        DateTime?
+  placedAt           DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  customer           Customer             @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  shippingAddress    Address              @relation("OrderShippingAddress", fields: [shippingAddressId], references: [id], onDelete: Restrict)
+  billingAddress     Address              @relation("OrderBillingAddress", fields: [billingAddressId], references: [id], onDelete: Restrict)
+  items              OrderItem[]
+  statusHistory      OrderStatusHistory[]
+  payments           Payment[]
+
+  @@index([customerId])
+  @@index([status])
+  @@index([placedAt])
+  @@map("orders")
+}
+
+model OrderItem {
+  id          String   @id @default(uuid())
+  orderId     String
+  productId   String
+  productName String
+  productSku  String
+  unitPrice   Decimal  @db.Decimal(10, 2)
+  quantity    Int
+  totalPrice  Decimal  @db.Decimal(10, 2)
+
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+  @@index([productId])
+  @@map("order_items")
+}
+
+model OrderStatusHistory {
+  id             String      @id @default(uuid())
+  orderId        String
+  previousStatus OrderStatus
+  newStatus      OrderStatus
+  changedByRole  String      @default("SYSTEM")
+  notes          String?
+  createdAt      DateTime    @default(now())
+
+  order          Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@map("order_status_history")
+}
+
+// 7. Payment Processing (Dev B)
+model Payment {
+  id              String        @id @default(uuid())
+  orderId         String
+  transactionId   String        @unique
+  amount          Decimal       @db.Decimal(10, 2)
+  currency        String        @default("USD")
+  method          PaymentMethod @default(CREDIT_CARD)
+  status          PaymentStatus @default(PENDING)
+  gatewayResponse String?       // JSON or response string from mock/Stripe
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  order           Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@map("payments")
+}
+
+// 8. Reviews & Ratings (Dev B)
+model Review {
+  id                 String   @id @default(uuid())
+  productId          String
+  customerId         String
+  rating             Int      // 1 to 5 stars
+  title              String
+  comment            String
+  isVerifiedPurchase Boolean  @default(false)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  product            Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  customer           Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, customerId])
+  @@index([productId])
+  @@map("reviews")
+}
+
+// 9. Admin RBAC & System Audit Logging (Dev B)
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?
+  action     String   // e.g. ROLE_CHANGE, PRODUCT_CREATE, STOCK_ADJUST, ORDER_STATUS_UPDATE
+  resource   String   // e.g. USER, PRODUCT, INVENTORY, ORDER
+  resourceId String?
+  details    String?  // JSON string or summary note
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
